@@ -75,6 +75,11 @@ window.onload = function() {
 
     }
 
+    // attempt to parse the current window object (if any)
+    if( window.location.hash != null && window.location.hash.length > 1 ) {
+        parseModel(window.location.hash.substr(1));
+    }
+
     let camera: THREE.Camera;
 
     function onResize() {
