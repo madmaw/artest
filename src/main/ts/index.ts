@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import * as jsQR from 'jsqr';
-import { arCreateCameraMatrix, arGetTransMatSquare } from './ar';
+import * as pako from 'pako';
+import { arCreateCameraMatrix, arGetTransMatSquare, arglCameraFrustumRH, arglCameraViewRH } from './ar';
 
 function from3x4ToMatrix4(m: number[][]): THREE.Matrix4 {
     return new THREE.Matrix4().set(
@@ -30,12 +31,50 @@ window.onload = function() {
     let canvas = <HTMLCanvasElement>document.getElementById('canvas');
 
     let scene = new THREE.Scene();
-    let model = new THREE.Mesh(
-        new THREE.CubeGeometry(1, 1, 1), 
+    let geometry = new THREE.CubeGeometry(1, 1, 1);
+    geometry.faces[0].color.setHex(0xFF0000);
+    geometry.faces[1].color.setHex(0xFF0000);
+    geometry.faces[2].color.setHex(0x0000FF);
+    geometry.faces[3].color.setHex(0x0000FF);
+    geometry.faces[4].color.setHex(0x00FF00);
+    geometry.faces[5].color.setHex(0x00FF00);
+    geometry.faces[6].color.setHex(0xFFFF00);
+    geometry.faces[7].color.setHex(0xFFFF00);
+    geometry.faces[8].color.setHex(0xFF00FF);
+    geometry.faces[9].color.setHex(0xFF00FF);
+    geometry.faces[10].color.setHex(0x00FFFF);
+    geometry.faces[11].color.setHex(0x00FFFF);
+
+    let model: THREE.Object3D = new THREE.Mesh(
+        geometry, 
         new THREE.MeshBasicMaterial({
-            color: 0xFF0000
+            color: 0xFFFFFF, 
+            vertexColors: THREE.FaceColors,
         })
     );
+
+    function parseModel(input: string): void {
+        try {
+            let deflated = atob(input);
+            let jsonString = pako.inflate(deflated, {
+                to: 'string'
+            });
+            let json = JSON.parse(jsonString);
+            let loader = new THREE.ObjectLoader();
+            let newModel = loader.parse(json);
+            if( model != null ) {
+                scene.remove(model);
+            }
+            model = newModel;
+            if( newModel != null ) {
+                scene.add(model);
+            }
+        } catch( e ) {
+            console.warn('unable to decompress external model', input, e);
+        }
+
+    }
+
     let camera: THREE.Camera;
 
     function onResize() {
@@ -44,6 +83,10 @@ window.onload = function() {
             container.clientWidth/container.clientHeight
         );
         camera.matrixAutoUpdate = false;
+        camera.position.set(0, 0, 0);
+        camera.lookAt(new THREE.Vector3(0, 0, 0));
+        camera.updateMatrix();
+
 
         canvas.width = container.clientWidth;
         canvas.height = container.clientHeight;
@@ -69,6 +112,64 @@ window.onload = function() {
 
     let arCameraTransform: THREE.Matrix4;
     let arCameraProjectionMatrix: number[][];
+
+    function startAugmentedReality() {
+        navigator.getUserMedia(
+            {
+                video: {
+                    facingMode: {
+                        ideal: 'environment'
+                    }
+                }
+            }, 
+            (stream: MediaStream) => {
+                for( let track of stream.getVideoTracks()) {
+                    let facingMode: any = track.getCapabilities().facingMode;
+                    if( facingMode != null ) {
+                        if( facingMode instanceof Array ) {
+                            if( facingMode.length > 0 ) {
+                                videoMirrored = facingMode.indexOf('environment') < 0;
+                            }
+                        } else {
+                            videoMirrored = facingMode != 'environment';
+                        }    
+                    }
+                }    
+                videoStream = stream;
+                videoElement = document.createElement('video');
+                videoCanvas = document.createElement('canvas');
+                videoElement.srcObject = stream;
+                videoElement.onerror = videoElement.onended = stopAugmentedReality;
+    
+    
+                videoElement.addEventListener('loadedmetadata', () => {
+                    videoCanvas.width = videoElement.videoWidth;
+                    videoCanvas.height = videoElement.videoHeight;
+    
+                    videoTexture = new THREE.Texture(videoCanvas);
+                    videoTexture.wrapS = videoTexture.wrapT = THREE.ClampToEdgeWrapping;
+                    videoTexture.minFilter = THREE.LinearFilter;
+    
+                    arCameraProjectionMatrix = arCreateCameraMatrix(videoElement.videoWidth, videoElement.videoHeight, Math.PI/4);
+                    // TODO somehow turn the above into the below?!
+                    //camera.projectionMatrix.fromArray([1.9102363924347978, 0, 0, 0, 0, -2.5377457054523322, 0, 0, 0.013943280545895442, 0.005830389685211879, 1.0000002000000199, 1, 0, 0, -0.00020000002000000202, 0]);
+                    let m = arglCameraFrustumRH(arCameraProjectionMatrix, videoElement.videoWidth, videoElement.videoHeight, 1, 100);
+                    camera.projectionMatrix.fromArray(m);
+                                
+                    renderAugmentedReality();
+    
+                    // set the background
+                    scene.background = videoTexture;
+    
+                });
+    
+            }, 
+            (error: MediaStreamError) => {
+                // oh well
+                console.warn('unable to get camera stream', error);
+            }
+        );    
+    }
 
     function stopAugmentedReality() {
         if( videoStream != null ) {
@@ -141,7 +242,6 @@ window.onload = function() {
             context.arc(qr.location.topLeftCorner.x, qr.location.topLeftCorner.y, d, 0, Math.PI*2);
             context.stroke();
 
-            // assume d = 1 in world coordinates
             let cx = qr.location.bottomLeftFinderPattern.x + dx/2;
             let cy = qr.location.bottomLeftFinderPattern.y + dy/2;
 
@@ -151,30 +251,25 @@ window.onload = function() {
                     new THREE.Vector2(qr.location.topRightCorner.x, qr.location.topRightCorner.y), 
                     new THREE.Vector2(qr.location.bottomRightCorner.x, qr.location.bottomRightCorner.y), 
                     new THREE.Vector2(qr.location.bottomLeftCorner.x, qr.location.bottomLeftCorner.y),
-                    // new THREE.Vector2(-10, -10),
-                    // new THREE.Vector2(10, -10), 
-                    // new THREE.Vector2(10, 10), 
-                    // new THREE.Vector2(-10, 10), 
                 ]);
-                let tm = from3x4ToMatrix4(m);
-                // flip y and z
-                /*
-                tm = new THREE.Matrix4().set(
-                    1, 0, 0, 0, 
-                    0, 0, 1, 0, 
-                    0, -1, 0, 0, 
-                    0, 0, 0, 1,
-                ).multiply(tm);
-                */
-                
-                // tm = tm.getInverse(tm);
-                let v = new THREE.Vector3(0, 0, 0);
-                console.log('v', v.applyMatrix4(tm));    
-                let r = new THREE.Euler();
-                r.setFromRotationMatrix(tm);
-                console.log('r', r);
-
+                //let tm = from3x4ToMatrix4(m);
+                let into = new Array<number>(16);
+                arglCameraViewRH(m, into);
+                let tm = new THREE.Matrix4().fromArray(into);
                 arCameraTransform = tm;
+
+                let url = qr.data;
+                // is it a URL?
+                let parser = document.createElement('a');
+                parser.href = url;
+                // is there a hidden model?
+                let hash = parser.hash;
+                if( hash != null && hash.length > 1 ) {
+                    // attempt to decode model 
+                    parseModel(hash.substr(1));
+                }
+                
+
             } catch( e ) {
                 console.error('uh oh!', e);
             }
@@ -185,62 +280,6 @@ window.onload = function() {
         videoTexture.needsUpdate = true;
     }
 
-    function startAugmentedReality() {
-        navigator.getUserMedia(
-            {
-                video: {
-                    facingMode: {
-                        ideal: 'environment'
-                    }
-                }
-            }, 
-            (stream: MediaStream) => {
-                for( let track of stream.getVideoTracks()) {
-                    let facingMode: any = track.getCapabilities().facingMode;
-                    if( facingMode != null ) {
-                        if( facingMode instanceof Array ) {
-                            if( facingMode.length > 0 ) {
-                                videoMirrored = facingMode.indexOf('environment') < 0;
-                            }
-                        } else {
-                            videoMirrored = facingMode != 'environment';
-                        }    
-                    }
-                }    
-                videoStream = stream;
-                videoElement = document.createElement('video');
-                videoCanvas = document.createElement('canvas');
-                videoElement.srcObject = stream;
-                videoElement.onerror = videoElement.onended = stopAugmentedReality;
-    
-    
-                videoElement.addEventListener('loadedmetadata', () => {
-                    videoCanvas.width = videoElement.videoWidth;
-                    videoCanvas.height = videoElement.videoHeight;
-    
-                    videoTexture = new THREE.Texture(videoCanvas);
-                    videoTexture.wrapS = videoTexture.wrapT = THREE.ClampToEdgeWrapping;
-                    videoTexture.minFilter = THREE.LinearFilter;
-    
-                    arCameraProjectionMatrix = arCreateCameraMatrix(videoElement.videoWidth, videoElement.videoHeight, Math.PI/4);
-                    // TODO somehow turn the above into the below?!
-                    camera.projectionMatrix.fromArray([1.9102363924347978, 0, 0, 0, 0, -2.5377457054523322, 0, 0, 0.013943280545895442, 0.005830389685211879, 1.0000002000000199, 1, 0, 0, -0.00020000002000000202, 0]);
-                        
-                    renderAugmentedReality();
-    
-                    // set the background
-                    scene.background = videoTexture;
-    
-                });
-    
-            }, 
-            (error: MediaStreamError) => {
-                // oh well
-                console.warn('unable to get camera stream', error);
-            }
-        );    
-    }
-
     let update = function() {
         requestAnimationFrame(update);
 
@@ -249,18 +288,18 @@ window.onload = function() {
         }
 
         if( arCameraTransform != null ) {
-            //camera.projectionMatrix.copy(from3x4ToMatrix4(arCameraProjectionMatrix));
-            //camera.position.set(0, 0, 0).applyMatrix4(arCameraTransform);
-            //camera.rotation.setFromRotationMatrix(arCameraTransform);
-            //camera.lookAt(new THREE.Vector3(0, 0, 0));
 
-            model.matrix.copy(arCameraTransform);
-            model.updateMatrix();
-        } else {
-            //camera.position.set(5, 5, 5);
-            //camera.lookAt(new THREE.Vector3(0, 0, 0));
+            // both these things work? I'm not sure how that's possible (the camera one is more desirable through)
+
+            // model.matrixAutoUpdate = false;
+            // model.matrix.copy(arCameraTransform);
+            // model.matrixWorldNeedsUpdate = true;
+
+            let m = arglCameraFrustumRH(arCameraProjectionMatrix, videoElement.videoWidth, videoElement.videoHeight, 1, 100);
+            camera.projectionMatrix.fromArray(m).multiply(arCameraTransform);
+    
+
         }
-        camera.updateMatrix();
 
 
 
@@ -268,29 +307,49 @@ window.onload = function() {
 
     }
     update();
-    
-    canvas.onclick = function() {
-        if( arCameraProjectionMatrix == null ) {
-            arCameraProjectionMatrix = arCreateCameraMatrix(320, 240, Math.PI/4);
+
+    startAugmentedReality();
+
+    /*
+    // output some models for compession
+    let modelInput = `
+    {
+        "geometries": [
+            {
+                "uuid": "1",
+                "type": "TorusBufferGeometry",
+                "radius": 0.4,
+                "tube": 0.2,
+                "radialSegments": 9,
+                "tubularSegments": 9,
+                "arc": 6.283185
+            }],
+        "materials": [
+            {
+                "uuid": "2",
+                "type": "MeshStandardMaterial",
+                "color": 16777215,
+                "emissive": 65408,
+                "depthFunc": 3
+            }],
+        "object": {
+            "uuid": "3",
+            "type": "Mesh",
+            "name": "Torus",
+            "matrix": [1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],
+            "geometry": "1",
+            "material": "2"
         }
-        let x = arGetTransMatSquare(arCameraProjectionMatrix, 80, [
-            {
-                x: 116.85714701674901, 
-                y: 73.796876432764705
-            }, 
-            {
-                x: 175.69344358953515, 
-                y: 63.579204613264743
-            }, 
-            {
-                x: 184.63623852551325, 
-                y: 118.51882412432155
-            },
-            {
-                x: 126.99318088433860, 
-                y: 127.34088991574521
-            }, 
-        ])
-        console.log(x);
-    }
+    }    
+    `;
+    let modelCompressed = pako.deflate(modelInput, {
+        to: 'string'
+    });
+    let modelBase64 = btoa(modelCompressed);
+    console.log(modelBase64);
+
+    parseModel(modelBase64);
+    */
 }
+
+
