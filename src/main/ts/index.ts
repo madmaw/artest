@@ -52,6 +52,7 @@ window.onload = function() {
             vertexColors: THREE.FaceColors,
         })
     );
+    model.position.set(0, 0, .5);
 
     function parseModel(input: string): void {
         try {
