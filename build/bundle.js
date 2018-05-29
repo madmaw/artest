@@ -694,6 +694,7 @@ window.onload = function () {
         color: 0xFFFFFF,
         vertexColors: THREE.FaceColors
     }));
+    model.position.set(0, 0, .5);
     function parseModel(input) {
         try {
             var deflated = atob(input);
